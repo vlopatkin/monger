@@ -3,16 +3,15 @@ package main
 import (
 	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/beevik/ntp"
 	"github.com/influxdata/influxdb/client"
 	"github.com/iron-io/iron_go3/api"
 	"github.com/iron-io/iron_go3/config"
@@ -46,21 +45,23 @@ var (
 	influxUsername = flag.String("influx-username", "", "username for influx db")
 	influxPassword = flag.String("influx-password", "", "password for username for influx db")
 
-	ntpdelta   time.Duration // b/c clock sync
+	//ntpdelta   time.Duration // b/c clock sync
 	conf       *config.Settings
 	influxConf *InfluxConfig
 )
 
-func now() time.Time { return time.Now().Add(-ntpdelta) }
+func now() time.Time {
+	return time.Now() // .Add(-ntpdelta)
+}
 
 func init() {
-	err := errors.New("bogo")
-	var ntpnow time.Time
-	for err != nil {
-		ntpnow, err = ntp.Time("pool.ntp.org")
-		log15.Crit("sorry dude, late for work", "err", err)
-	}
-	ntpdelta = time.Now().Sub(ntpnow)
+	//err := errors.New("bogo")
+	// var ntpnow time.Time
+	// for err != nil {
+	// 	ntpnow, err = ntp.Time("pool.ntp.org")
+	// 	log15.Crit("sorry dude, late for work", "err", err)
+	// }
+	// ntpdelta = time.Now().Sub(ntpnow)
 
 	flag.Parse()
 	if payload := os.Getenv("PAYLOAD_FILE"); payload != "" { // running on iw
@@ -141,11 +142,12 @@ func init() {
 }
 
 func main() {
-	var reporter Reporter = LogReporter{}
+	reporter := NewStatReporter(1 * time.Microsecond)
 	fmt.Println("starting monger")
 	if influxConf != nil {
 		reporter = NewInfluxReporter(influxConf)
 	}
+	defer reporter.Flush()
 
 	msgs := make(chan struct{})
 	go func() {
@@ -235,14 +237,102 @@ type InfluxConfig struct {
 	Password   string  `json:"influx_password"`
 }
 
+type SliceStat map[time.Duration]int64
+type StatReporter struct {
+	sync.Mutex
+	latencyStat map[string]SliceStat
+	Slice       time.Duration
+}
+
+func NewStatReporter(slice time.Duration) Reporter {
+	return &StatReporter{
+		latencyStat: make(map[string]SliceStat),
+		Slice:       slice,
+	}
+}
+
+func (r *StatReporter) Add(q, pid, op string, messages, bytes int, latency time.Duration, now time.Time) {
+	//key := op + "_" + q
+	key := op
+	slice := ((latency + r.Slice/2) / r.Slice) * r.Slice
+	r.Lock()
+	defer r.Unlock()
+	sliceStat, ok := r.latencyStat[key]
+	if !ok {
+		sliceStat = make(map[time.Duration]int64)
+		r.latencyStat[key] = sliceStat
+	}
+
+	sliceStat[slice]++
+}
+
+func (r *StatReporter) Flush() {
+	r.Lock()
+	defer r.Unlock()
+
+	avgTotal := time.Duration(0)
+
+	for k, sliceStat := range r.latencyStat {
+		//stat vars
+		cnt := int64(0)
+		duration := time.Duration(0)
+		var percentiles [1001]time.Duration
+
+		fmt.Println(k)
+
+		//ordering durations to collect percentiles
+		durations := make([]time.Duration, 0)
+		for d, c := range sliceStat {
+			durations = append(durations, d)
+			cnt += c
+		}
+		sort.Slice(durations, func(i, j int) bool {
+			return durations[i] < durations[j]
+		})
+
+		runningCount := int64(0)
+		for _, d := range durations {
+			c := sliceStat[d]
+			runningCount += c
+			percentiles[(runningCount*1000)/cnt] = d
+			duration += time.Duration(c) * d
+			//fmt.Printf("%s\t%d\n", d, c)
+		}
+
+		//fixing empty slots
+		for i := 1; i < len(percentiles); i++ {
+			if percentiles[i] == time.Duration(0) {
+				percentiles[i] = percentiles[i-1]
+			}
+		}
+
+		avg := duration / time.Duration(cnt)
+		fmt.Printf("sum %s\n", duration)
+		fmt.Printf("avg %s\n", avg)
+		for _, p := range []float64{.25, .50, .75, .90, .95, .99, .995, .999, 1} {
+			fmt.Printf("percentile %f %s \n", p, percentiles[int(p*1000)])
+		}
+
+		fmt.Printf("count %d\n", cnt)
+
+		fmt.Println("-------------------------------------")
+
+		avgTotal += avg
+	}
+
+	fmt.Printf("%f ops/sec", 1.0/avgTotal.Seconds())
+}
+
 type LogReporter struct{}
 
 func (LogReporter) Add(q, pid, op string, messages, bytes int, latency time.Duration, now time.Time) {
 	log15.Info("stats", "op", op, "queue", q, "project_id", pid, "latency_ms", latency)
 }
+func (LogReporter) Flush() {}
 
 type Reporter interface {
 	Add(q, pid, op string, messages, bytes int, latency time.Duration, now time.Time)
+	Flush()
 }
 
 type InfluxReporter struct {
@@ -355,6 +445,8 @@ func (ir *InfluxReporter) report() {
 		ir.Unlock()
 	}
 }
+
+func (ir *InfluxReporter) Flush() {}
 
 // queryDB convenience function to query the database
 func queryDB(con *client.Client, db, cmd string) (res []client.Result, err error) {
