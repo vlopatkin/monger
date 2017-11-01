@@ -21,7 +21,7 @@ if [ ! -d "$LOGS_DIR" ]; then
 fi
 
 run_bench () {
-    docker rm -f mq || echo "no mq"
+    docker rm -f -v mq || echo "no mq"
     docker run -d --name mq -p 8080:8080/tcp $MQ_IMAGE
 
     #give it a moment to spin up the mq container
