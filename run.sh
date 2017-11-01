@@ -33,7 +33,9 @@ run_bench () {
     CPU_NAME=`cat /proc/cpuinfo | grep 'model name' | head -n 1 | cut -f 2 -d ':'`
     { echo $CPU_NAME; echo $MQ_IMAGE; echo $MONGER_ARGS ;time ./monger -p 123 -t hi -host localhost -port 8080 -wat prod $MONGER_ARGS ; } &>$LOGS_DIR/$OUTPUT_FILE_PREFIX-$OUTPUT_FILE_SUFFIX-prod.log
     { echo $CPU_NAME; echo $MQ_IMAGE; echo $MONGER_ARGS; time ./monger -p 123 -t hi -host localhost -port 8080 -wat cons $MONGER_ARGS ; } &>$LOGS_DIR/$OUTPUT_FILE_PREFIX-$OUTPUT_FILE_SUFFIX-cons.log
-    { echo $CPU_NAME; echo $MQ_IMAGE; echo $MONGER_ARGS; time ./monger -p 123 -t hi -host localhost -port 8080 -wat cons $MONGER_ARGS ; } &>$LOGS_DIR/$OUTPUT_FILE_PREFIX-$OUTPUT_FILE_SUFFIX-empty-cons.log
+    if [ $MSG_COUNT -lt 10001 ] ; then
+        { echo $CPU_NAME; echo $MQ_IMAGE; echo $MONGER_ARGS; time ./monger -p 123 -t hi -host localhost -port 8080 -wat cons $MONGER_ARGS ; } &>$LOGS_DIR/$OUTPUT_FILE_PREFIX-$OUTPUT_FILE_SUFFIX-empty-cons.log
+    fi
 }
 
 
