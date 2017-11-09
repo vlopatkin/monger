@@ -1,0 +1,5 @@
+FROM busybox
+
+ADD cleanup.sh /cleanup.sh
+
+ENTRYPOINT [ "/cleanup.sh" ]
